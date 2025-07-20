@@ -1,54 +1,39 @@
 import streamlit as st
 import pandas as pd
-import plotly.express as px
+import plotly.graph_objects as go
+from plotly.subplots import make_subplots
 
 # --- KONFIGURASI ---
-# URL sudah diganti sesuai file yang benar
 GCS_URL = "https://storage.googleapis.com/stock-csvku/hasil_gabungan.csv"
 
 # Konfigurasi halaman Streamlit
 st.set_page_config(page_title="Dashboard Saham Potensial", layout="wide")
-st.title("📊 Dashboard Saham Potensial")
+st.title("📊 Dashboard Analisis Saham Gabungan")
 
 
 # --- FUNGSI LOAD DATA (dengan caching) ---
-@st.cache_data(ttl=300)  # Cache data selama 5 menit
+@st.cache_data(ttl=300)
 def load_data():
     """
-    Memuat data dari Google Cloud Storage, membersihkan, 
-    dan menghitung metrik tambahan.
+    Memuat data dari GCS, membersihkan, dan menghitung metrik.
     """
     try:
         df = pd.read_csv(GCS_URL)
-        
-        # Konversi tanggal, error akan menjadi NaT (Not a Time)
         df['Last Trading Date'] = pd.to_datetime(df['Last Trading Date'], errors='coerce')
         
-        # --- PERBAIKAN LOGIKA PERHITUNGAN CHANGE % ---
-        # Hitung harga penutupan sebelumnya (Previous Close)
         previous_close = df['Close'] - df['Change']
-        
-        # Hindari pembagian dengan nol jika harga sebelumnya 0
-        # Ganti 0 dengan None (NaN) agar hasil pembagiannya juga NaN
         previous_close.replace(0, pd.NA, inplace=True) 
+        df['Change %'] = ((df['Change'] / previous_close) * 100).fillna(0)
         
-        # Hitung persentase perubahan terhadap harga sebelumnya
-        df['Change %'] = (df['Change'] / previous_close) * 100
-        
-        # Ganti nilai NaN di 'Change %' (jika ada) dengan 0
-        df['Change %'] = df['Change %'].fillna(0)
-
         return df
-
     except Exception as e:
         st.error(f"Gagal memuat data dari URL: {GCS_URL}")
         st.error(f"Error: {e}")
-        return pd.DataFrame() # Kembalikan dataframe kosong jika gagal
+        return pd.DataFrame()
 
 # --- LOAD DATA ---
 df = load_data()
 
-# Jika dataframe kosong setelah gagal load, hentikan eksekusi
 if df.empty:
     st.warning("Data tidak tersedia. Mohon periksa kembali URL atau isi file CSV.")
     st.stop()
@@ -56,21 +41,20 @@ if df.empty:
 
 # --- SIDEBAR FILTER ---
 st.sidebar.header("📌 Filter Saham")
-# Ambil daftar saham unik dan urutkan, hapus nilai kosong (NaN)
 stock_list = sorted(df['Stock Code'].dropna().unique())
 selected_stock = st.sidebar.selectbox("Pilih Kode Saham", stock_list)
 
-# Filter dataframe berdasarkan saham yang dipilih dan urutkan berdasarkan tanggal
+# Filter dataframe berdasarkan saham yang dipilih
 df_filtered = df[df['Stock Code'] == selected_stock].sort_values('Last Trading Date')
 
 
 # --- TAMPILAN UTAMA ---
-st.header(f"Analisis Saham: {selected_stock}")
+st.header(f"Analisis Gabungan: {selected_stock}")
 
-# Tampilkan tabel data terakhir di paling atas
+# --- TAMPILKAN TABEL DATA ---
 st.subheader("📈 Data Historis")
 st.dataframe(
-    df_filtered[['Last Trading Date', 'Close', 'Change', 'Change %', 'Volume', 'Frequency']].sort_values(
+    df_filtered[['Last Trading Date', 'Close', 'Change %', 'Volume', 'Frequency']].sort_values(
         'Last Trading Date', ascending=False
     ),
     use_container_width=True,
@@ -82,23 +66,40 @@ st.dataframe(
     }
 )
 
-# Buat Tab untuk visualisasi
-tab1, tab2, tab3 = st.tabs(["📊 Harga Penutupan (Close)", "📉 Volume Perdagangan", "📈 Persentase Perubahan (%)"])
+# --- BUAT GRAFIK GABUNGAN DENGAN DUAL-AXIS ---
+st.subheader("📊 Grafik Gabungan (Volume, Harga, Frekuensi)")
 
-with tab1:
-    fig1 = px.line(df_filtered, x='Last Trading Date', y='Close',
-                   title=f"Grafik Harga Penutupan {selected_stock}", markers=True)
-    fig1.update_layout(xaxis_title="Tanggal", yaxis_title="Harga Penutupan (Rp)")
-    st.plotly_chart(fig1, use_container_width=True)
+# 1. Inisialisasi gambar dengan sumbu-Y sekunder
+fig = make_subplots(specs=[[{"secondary_y": True}]])
 
-with tab2:
-    fig2 = px.bar(df_filtered, x='Last Trading Date', y='Volume',
-                  title=f"Grafik Volume Perdagangan {selected_stock}")
-    fig2.update_layout(xaxis_title="Tanggal", yaxis_title="Volume")
-    st.plotly_chart(fig2, use_container_width=True)
+# 2. Tambahkan Bar Chart untuk Volume (Sumbu-Y Primer / Kiri)
+fig.add_trace(
+    go.Bar(x=df_filtered['Last Trading Date'], y=df_filtered['Volume'], name='Volume', marker_color='lightblue'),
+    secondary_y=False,
+)
 
-with tab3:
-    fig3 = px.line(df_filtered, x='Last Trading Date', y='Change %',
-                   title=f"Grafik Persentase Perubahan Harian {selected_stock}", markers=True)
-    fig3.update_layout(xaxis_title="Tanggal", yaxis_title="Perubahan (%)")
-    st.plotly_chart(fig3, use_container_width=True)
+# 3. Tambahkan Line Chart untuk Harga Close (Sumbu-Y Sekunder / Kanan)
+fig.add_trace(
+    go.Scatter(x=df_filtered['Last Trading Date'], y=df_filtered['Close'], name='Close', mode='lines+markers', line=dict(color='orange')),
+    secondary_y=True,
+)
+
+# 4. Tambahkan Line Chart untuk Frekuensi (Sumbu-Y Sekunder / Kanan)
+fig.add_trace(
+    go.Scatter(x=df_filtered['Last Trading Date'], y=df_filtered['Frequency'], name='Frequency', mode='lines+markers', line=dict(color='green')),
+    secondary_y=True,
+)
+
+# 5. Atur Layout dan Judul Sumbu
+fig.update_layout(
+    title_text=f'Analisis Gabungan Saham {selected_stock}',
+    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
+)
+
+# Atur judul sumbu-Y
+fig.update_yaxes(title_text="Volume Perdagangan", secondary_y=False)
+fig.update_yaxes(title_text="Harga (Rp) & Frekuensi", secondary_y=True)
+
+
+# Tampilkan grafik di Streamlit
+st.plotly_chart(fig, use_container_width=True)
