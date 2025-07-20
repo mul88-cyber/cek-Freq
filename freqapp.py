@@ -3,19 +3,28 @@ import pandas as pd
 import plotly.graph_objects as go
 from plotly.subplots import make_subplots
 
-# --- KONFIGURASI & LOAD DATA (Sama seperti sebelumnya) ---
+# --- KONFIGURASI & LOAD DATA ---
 GCS_URL = "https://storage.googleapis.com/stock-csvku/hasil_gabungan.csv"
 st.set_page_config(page_title="Dashboard Saham Potensial", layout="wide")
 st.title("📊 Dashboard Analisis Saham")
 
 @st.cache_data(ttl=300)
 def load_data():
+    """Memuat data dari GCS, membersihkan, dan menghitung metrik."""
     try:
         df = pd.read_csv(GCS_URL)
+        # Konversi ke datetime
         df['Last Trading Date'] = pd.to_datetime(df['Last Trading Date'], errors='coerce')
+        # Buat kolom 'Bulan' dengan format YYYY-MM untuk filter
+        df['Bulan'] = df['Last Trading Date'].dt.strftime('%Y-%m')
+        
+        # Hitung metrik lainnya
         previous_close = df['Close'] - df['Change']
-        previous_close.replace(0, pd.NA, inplace=True) 
+        previous_close.replace(0, pd.NA, inplace=True)
         df['Change %'] = ((df['Change'] / previous_close) * 100).fillna(0)
+        
+        # Hapus baris dengan tanggal yang tidak valid setelah konversi
+        df.dropna(subset=['Last Trading Date'], inplace=True)
         return df
     except Exception as e:
         st.error(f"Gagal memuat data: {e}")
@@ -24,71 +33,79 @@ def load_data():
 df = load_data()
 
 if df.empty:
-    st.warning("Data tidak tersedia.")
+    st.warning("Data tidak tersedia atau gagal dimuat.")
     st.stop()
 
-# --- SIDEBAR FILTER (Sama seperti sebelumnya) ---
-st.sidebar.header("📌 Filter Saham")
+
+# --- SIDEBAR FILTER ---
+st.sidebar.header("📌 Filter Data")
+
+# 1. Filter Saham (Single Choice)
 stock_list = sorted(df['Stock Code'].dropna().unique())
 selected_stock = st.sidebar.selectbox("Pilih Kode Saham", stock_list)
-df_filtered = df[df['Stock Code'] == selected_stock].sort_values('Last Trading Date')
+
+# Filter dataframe sementara hanya untuk saham yang dipilih
+df_stock_filtered = df[df['Stock Code'] == selected_stock]
+
+# 2. Filter Bulan (Multiple Choice)
+# Ambil daftar bulan yang unik & urutkan, HANYA dari saham yang sudah dipilih
+month_list = sorted(df_stock_filtered['Bulan'].unique())
+
+selected_months = st.sidebar.multiselect(
+    "Pilih Bulan (bisa lebih dari satu)",
+    options=month_list,
+    default=month_list  # Default: pilih semua bulan yang tersedia
+)
+
+# --- FILTER DATA AKHIR ---
+# Filter berdasarkan saham DAN bulan yang dipilih
+if not selected_months:
+    st.warning("Pilih minimal satu bulan untuk menampilkan data.")
+    df_filtered = pd.DataFrame() # Kosongkan dataframe jika tidak ada bulan dipilih
+else:
+    df_filtered = df_stock_filtered[df_stock_filtered['Bulan'].isin(selected_months)].sort_values('Last Trading Date')
 
 
 # --- TAMPILAN UTAMA ---
 st.header(f"Analisis Saham: {selected_stock}")
-st.dataframe(
-    df_filtered[['Last Trading Date', 'Close', 'Change %', 'Volume', 'Frequency']].sort_values('Last Trading Date', ascending=False),
-    use_container_width=True, hide_index=True,
-    column_config={
-        "Close": st.column_config.NumberColumn(format="Rp %d"),
-        "Change %": st.column_config.NumberColumn(format="%.2f%%"),
-    }
-)
 
-# --- ALTERNATIF 1: GRAFIK BERTUMPUK (STACKED CHARTS) ---
-st.subheader("Grafik Analisis (Model Bertumpuk)")
+if not df_filtered.empty:
+    st.subheader("📈 Data Historis")
+    st.dataframe(
+        df_filtered[['Last Trading Date', 'Close', 'Change %', 'Volume', 'Frequency']].sort_values('Last Trading Date', ascending=False),
+        use_container_width=True, hide_index=True,
+        column_config={"Close": st.column_config.NumberColumn(format="Rp %d"), "Change %": st.column_config.NumberColumn(format="%.2f%%")}
+    )
 
-# Buat 2 baris subplot, yang berbagi sumbu-X
-fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05,
-                    row_heights=[0.7, 0.3], # Alokasi ruang: 70% untuk chart atas, 30% bawah
-                    specs=[[{"secondary_y": True}], # Chart atas punya sumbu Y ganda
-                           [{"secondary_y": False}]]) # Chart bawah tidak
+    # --- GRAFIK BERTUMPUK (STACKED CHARTS) ---
+    st.subheader("Grafik Analisis")
+    fig = make_subplots(rows=2, cols=1, shared_xaxes=True, vertical_spacing=0.05,
+                        row_heights=[0.7, 0.3], specs=[[{"secondary_y": True}], [{"secondary_y": False}]])
 
-# Grafik Atas (Harga & Frekuensi)
-# 1. Harga Close (Sumbu Y Primer / Kiri)
-fig.add_trace(go.Scatter(
-    x=df_filtered['Last Trading Date'], y=df_filtered['Close'],
-    name='Harga (Rp)', mode='lines', line=dict(color='#00BFFF', width=2) # Deep Sky Blue
-), row=1, col=1, secondary_y=False)
+    # Grafik Atas (Harga & Frekuensi)
+    fig.add_trace(go.Scatter(
+        x=df_filtered['Last Trading Date'], y=df_filtered['Close'],
+        name='Harga (Rp)', mode='lines', line=dict(color='#00BFFF', width=2)
+    ), row=1, col=1, secondary_y=False)
+    fig.add_trace(go.Scatter(
+        x=df_filtered['Last Trading Date'], y=df_filtered['Frequency'],
+        name='Frekuensi', mode='lines', line=dict(color='#32CD32', width=1.5, dash='dash')
+    ), row=1, col=1, secondary_y=True)
 
-# 2. Frekuensi (Sumbu Y Sekunder / Kanan)
-fig.add_trace(go.Scatter(
-    x=df_filtered['Last Trading Date'], y=df_filtered['Frequency'],
-    name='Frekuensi', mode='lines', line=dict(color='#32CD32', width=1.5, dash='dash') # Lime Green
-), row=1, col=1, secondary_y=True)
+    # Grafik Bawah (Volume)
+    fig.add_trace(go.Scatter(
+        x=df_filtered['Last Trading Date'], y=df_filtered['Volume'],
+        name='Volume', fill='tozeroy', mode='none', fillcolor='rgba(119, 136, 153, 0.5)'
+    ), row=2, col=1)
 
-# Grafik Bawah (Volume)
-# 3. Volume sebagai Area Chart
-fig.add_trace(go.Scatter(
-    x=df_filtered['Last Trading Date'], y=df_filtered['Volume'],
-    name='Volume', fill='tozeroy', mode='none', fillcolor='rgba(119, 136, 153, 0.5)' # Light Slate Gray
-), row=2, col=1)
+    # Konfigurasi Layout
+    fig.update_layout(height=600, showlegend=True,
+                      legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1))
+    fig.update_xaxes(showticklabels=False, row=1, col=1)
+    fig.update_yaxes(title_text="<b>Harga Close (Rp)</b>", color='#00BFFF', row=1, col=1, secondary_y=False)
+    fig.update_yaxes(title_text="<b>Frekuensi</b>", color='#32CD32', row=1, col=1, secondary_y=True, showgrid=False)
+    fig.update_yaxes(title_text="<b>Volume</b>", row=2, col=1)
 
-# Konfigurasi Layout
-fig.update_layout(
-    height=600,
-    showlegend=True,
-    xaxis_showticklabels=True,
-    xaxis2_showticklabels=True,
-    legend=dict(orientation="h", yanchor="bottom", y=1.02, xanchor="right", x=1)
-)
-# Sembunyikan label tanggal di grafik atas untuk menghindari duplikasi
-fig.update_xaxes(showticklabels=False, row=1, col=1)
-
-# Atur judul sumbu-Y
-fig.update_yaxes(title_text="<b>Harga Close (Rp)</b>", color='#00BFFF', row=1, col=1, secondary_y=False)
-fig.update_yaxes(title_text="<b>Frekuensi</b>", color='#32CD32', row=1, col=1, secondary_y=True)
-fig.update_yaxes(title_text="<b>Volume</b>", row=2, col=1)
-
-
-st.plotly_chart(fig, use_container_width=True)
+    st.plotly_chart(fig, use_container_width=True)
+else:
+    st.info("Tidak ada data untuk ditampilkan sesuai filter yang dipilih.")
