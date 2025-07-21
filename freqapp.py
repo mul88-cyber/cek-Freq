@@ -7,7 +7,7 @@ import statsmodels.api as sm # Library untuk analisis statistik
 # --- KONFIGURASI & LOAD DATA ---
 GCS_URL = "https://storage.googleapis.com/stock-csvku/hasil_gabungan.csv"
 st.set_page_config(page_title="Dashboard Riset Saham", layout="wide")
-st.title("📊 Dashboard Riset Pengaruh Transaksi Saham")
+st.title("📊 Dashboard Riset Pengaruh Transaksi Vol Freq")
 
 @st.cache_data(ttl=300)
 def load_data():
