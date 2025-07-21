@@ -6,7 +6,7 @@ from plotly.subplots import make_subplots
 # --- KONFIGURASI & LOAD DATA ---
 GCS_URL = "https://storage.googleapis.com/stock-csvku/hasil_gabungan.csv"
 st.set_page_config(page_title="Dashboard Saham Potensial", layout="wide")
-st.title("📊 Dashboard Analisis Saham")
+st.title("📊 Dashboard Analisis FREQ")
 
 @st.cache_data(ttl=300)
 def load_data():
