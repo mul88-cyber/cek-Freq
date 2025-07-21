@@ -5,7 +5,7 @@ from plotly.subplots import make_subplots
 
 # --- KONFIGURASI & LOAD DATA ---
 GCS_URL = "https://storage.googleapis.com/stock-csvku/hasil_gabungan.csv"
-st.set_page_config(page_title="Dashboard Saham Potensial", layout="wide")
+st.set_page_config(page_title="Dashboard CODE Potensial", layout="wide")
 st.title("📊 Dashboard Analisis FREQ")
 
 @st.cache_data(ttl=300)
@@ -37,7 +37,7 @@ if df.empty:
 st.sidebar.header("📌 Filter Data")
 
 stock_list = sorted(df['Stock Code'].dropna().unique())
-selected_stock = st.sidebar.selectbox("Pilih Kode Saham", stock_list)
+selected_stock = st.sidebar.selectbox("Pilih Kode CODE", stock_list)
 
 df_stock_filtered = df[df['Stock Code'] == selected_stock]
 
@@ -58,7 +58,7 @@ else:
 
 
 # --- TAMPILAN UTAMA ---
-st.header(f"Analisis Saham: {selected_stock}")
+st.header(f"Analisis CODE: {selected_stock}")
 
 if not df_filtered.empty:
     st.subheader("📈 Data Historis")
