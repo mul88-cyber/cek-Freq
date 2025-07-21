@@ -1,93 +1,110 @@
 import streamlit as st
 import pandas as pd
 import statsmodels.api as sm
-import numpy as np
 
-# --- KONFIGURASI & LOAD DATA ---
-st.set_page_config(page_title="Dashboard Analisis Prediktif", layout="wide")
-st.title("📈 Dashboard Analisis Prediktif Saham")
+# --- KONFIGURASI HALAMAN ---
+st.set_page_config(page_title="Dashboard Analisis Harian", layout="wide")
+st.title("📊 Dashboard Analisis Data Saham Harian")
+st.info("Anda bisa meng-upload beberapa file harian (.xlsx) sekaligus. Data akan otomatis digabungkan.")
 
+# --- FUNGSI UNTUK MEMBACA DAN MENGGABUNGKAN DATA ---
 @st.cache_data(ttl=300)
-def load_data(file_uploader):
-    """Memuat data dari file yang di-upload."""
-    if file_uploader is None:
+def load_and_combine_data(uploaded_files):
+    """Membaca semua file yg di-upload, menggabungkannya, dan membersihkan data."""
+    if not uploaded_files:
         return pd.DataFrame()
-    try:
-        df = pd.read_csv(file_uploader)
-        df['Last Trading Date'] = pd.to_datetime(df['Last Trading Date'], errors='coerce')
-        if 'Net Foreign' not in df.columns:
-            df['Net Foreign'] = df['Foreign Sell'] - df['Foreign Buy']
-        df.dropna(subset=['Last Trading Date', 'Change', 'Volume', 'Frequency', 'Stock Code'], inplace=True)
-        return df
-    except Exception as e:
-        st.error(f"Gagal memuat data: {e}")
+    
+    dataframes = []
+    for file in uploaded_files:
+        try:
+            # Baca file excel. 'engine='openpyxl'' dibutuhkan untuk file .xlsx modern
+            df = pd.read_excel(file, engine='openpyxl')
+            dataframes.append(df)
+        except Exception as e:
+            st.warning(f"Gagal membaca file {file.name}: {e}")
+            
+    if not dataframes:
         return pd.DataFrame()
+        
+    # Gabungkan semua dataframe menjadi satu
+    combined_df = pd.concat(dataframes, ignore_index=True)
+    
+    # Lakukan pembersihan data pada dataframe gabungan
+    # Ubah nama kolom agar konsisten (sesuaikan jika nama di file xlsx berbeda)
+    # Contoh: jika nama kolomnya 'Kode Saham', ubah jadi 'Stock Code'
+    # combined_df.rename(columns={'Nama Kolom Asli': 'Nama Kolom Baru'}, inplace=True)
+    
+    # Hapus baris yang tidak memiliki 'Stock Code'
+    combined_df.dropna(subset=['Stock Code'], inplace=True)
+    # Hapus baris ringkasan (jika ada) yang biasanya tidak punya kode saham
+    combined_df = combined_df[combined_df['Stock Code'] != 'Total']
+    
+    # Hitung 'Change' dan 'Net Foreign' jika belum ada
+    if 'Change' not in combined_df.columns:
+        # Asumsikan 'Close' dan 'Prev' ada
+        combined_df['Close'] = pd.to_numeric(combined_df['Close'], errors='coerce')
+        combined_df['Prev'] = pd.to_numeric(combined_df['Prev'], errors='coerce')
+        combined_df['Change'] = combined_df['Close'] - combined_df['Prev']
 
-# --- UPLOADER DI SIDEBAR ---
-st.sidebar.header("📌 Upload & Filter Data")
-uploaded_file = st.sidebar.file_uploader("Upload file hasil_gabungan.csv", type=["csv"])
+    if 'Net Foreign' not in combined_df.columns:
+        combined_df['Foreign Buy'] = pd.to_numeric(combined_df['Foreign Buy'], errors='coerce')
+        combined_df['Foreign Sell'] = pd.to_numeric(combined_df['Foreign Sell'], errors='coerce')
+        combined_df['Net Foreign'] = combined_df['Foreign Sell'] - combined_df['Foreign Buy']
 
-df = load_data(uploaded_file)
+    # Pastikan tipe data numerik benar
+    numeric_cols = ['Volume', 'Frequency', 'Net Foreign', 'Change']
+    for col in numeric_cols:
+        combined_df[col] = pd.to_numeric(combined_df[col], errors='coerce')
 
-if not df.empty:
-    stock_list = sorted(df['Stock Code'].dropna().unique())
+    combined_df.dropna(subset=numeric_cols, inplace=True)
+        
+    return combined_df
+
+# --- SIDEBAR & UPLOADER ---
+st.sidebar.header("📌 Upload & Filter")
+uploaded_files = st.sidebar.file_uploader(
+    "Upload file harian (.xlsx)", 
+    type=["xlsx"], 
+    accept_multiple_files=True
+)
+
+df_combined = load_and_combine_data(uploaded_files)
+
+# --- ANALISIS JIKA DATA TERSEDIA ---
+if not df_combined.empty:
+    st.sidebar.success(f"{len(df_combined)} baris data berhasil dimuat dari {len(uploaded_files)} file.")
+    
+    stock_list = ['Semua Saham'] + sorted(df_combined['Stock Code'].unique())
     selected_stock = st.sidebar.selectbox("Pilih Kode Saham untuk Analisis", stock_list)
-    
-    # Filter data hanya untuk saham yang dipilih
-    df_stock = df[df['Stock Code'] == selected_stock].sort_values('Last Trading Date').copy()
 
-    st.header(f"Analisis Prediktif untuk Saham: {selected_stock}")
-    st.markdown(f"**Hipotesis:** Apakah `Volume`, `Frekuensi`, dan `Net Foreign` hari ini bisa memprediksi kenaikan harga **besok**?")
+    if selected_stock == 'Semua Saham':
+        df_filtered = df_combined
+    else:
+        df_filtered = df_combined[df_combined['Stock Code'] == selected_stock]
+        
+    st.header(f"Analisis untuk: {selected_stock}")
+    st.dataframe(df_filtered)
 
-    # --- PERSIAPAN DATA UNTUK PREDIKSI ---
-    # Variabel prediktor (X) adalah data hari ini
-    X = df_stock[['Volume', 'Frequency', 'Net Foreign']]
-    
-    # Variabel target (Y) adalah apa yang terjadi besok
-    # Kita "geser" kolom 'Change' ke atas (-1) untuk mendapatkan perubahan harga besok
-    df_stock['Perubahan Harga Besok'] = df_stock['Change'].shift(-1)
-    
-    # Buat target biner: 1 jika harga besok naik (> 0), 0 jika turun/tetap (<= 0)
-    df_stock['Besok Naik?'] = (df_stock['Perubahan Harga Besok'] > 0).astype(int)
-    
-    # Hapus baris terakhir karena tidak punya data 'besok'
-    df_stock.dropna(subset=['Perubahan Harga Besok'], inplace=True)
-    
-    Y = df_stock['Besok Naik?']
-    X = X.loc[Y.index] # Pastikan X dan Y punya baris yang sama
+    # --- ANALISIS REGRESI ---
+    st.header("🔬 Analisis Regresi Pengaruh Transaksi")
+    st.markdown("**Hipotesis:** Apakah `Volume`, `Frekuensi`, dan `Net Foreign` berpengaruh terhadap `Perubahan Harga` pada hari yang sama?")
 
-    # Cek apakah data cukup
-    if len(df_stock) > 10:
-        # --- MENJALANKAN MODEL REGRESI LOGISTIK ---
+    if len(df_filtered) > 4:
+        Y = df_filtered['Change']
+        X = df_filtered[['Volume', 'Frequency', 'Net Foreign']]
         X = sm.add_constant(X)
-        model = sm.Logit(Y, X).fit(disp=0) # disp=0 untuk menyembunyikan output iterasi
 
-        st.subheader("Hasil Model Prediktif (Regresi Logistik)")
+        model = sm.OLS(Y, X).fit()
+        
+        st.subheader("Hasil Output Statistik")
         st.code(model.summary())
         
-        # --- INTERPRETASI HASIL ---
-        st.subheader("Cara Membaca Hasilnya")
-        
-        # Akurasi Model
-        predictions = (model.predict(X) > 0.5).astype(int)
-        accuracy = np.mean(predictions == Y) * 100
-        st.markdown(f"🎯 **Akurasi Model**: Model ini berhasil menebak **{accuracy:.2f}%** dari total hari perdagangan apakah harga akan naik atau turun besok. (Catatan: Akurasi 50% sama dengan lempar koin).")
-
-        # Koefisien
-        st.markdown("**Pengaruh Setiap Variabel:**")
-        odds_ratios = np.exp(model.params)
-        st.markdown(f"- **Volume**: Setiap kenaikan 1 unit `Volume`, peluang (odds) harga untuk naik besok berubah **{odds_ratios['Volume']:.4f} kali**.")
-        st.markdown(f"- **Frekuensi**: Setiap kenaikan 1 unit `Frekuensi`, peluang (odds) harga untuk naik besok berubah **{odds_ratios['Frequency']:.4f} kali**.")
-        st.markdown(f"- **Net Foreign**: Setiap kenaikan 1 unit `Net Foreign`, peluang (odds) harga untuk naik besok berubah **{odds_ratios['Net Foreign']:.4f} kali**.")
-        st.caption("*(Nilai > 1 berarti meningkatkan peluang, Nilai < 1 berarti menurunkan peluang)*")
-
-        # P-values
-        st.markdown("**Tingkat Keyakinan (Signifikansi Statistik):**")
-        st.markdown("Lihat kolom `P>|z|` pada tabel di atas. Jika nilainya di bawah 0.05, artinya pengaruh variabel tersebut **signifikan secara statistik** dan bukan cuma kebetulan.")
-        
-        st.warning("**Disclaimer:** Analisis ini berdasarkan data historis dan bukan merupakan saran finansial. Kinerja masa lalu tidak menjamin hasil di masa depan.")
-
+        st.subheader("Interpretasi Hasil")
+        r_squared = model.rsquared_adj * 100
+        st.markdown(f"- **R-squared (adjusted):** Sekitar **{r_squared:.2f}%** variasi harga dapat dijelaskan oleh model ini.")
+        # ... (Interpretasi detail lainnya bisa ditambahkan seperti skrip sebelumnya) ...
     else:
-        st.warning("Data tidak cukup untuk saham ini untuk dilakukan analisis prediktif.")
+        st.warning("Data tidak cukup untuk melakukan analisis regresi. Upload lebih banyak file atau pilih 'Semua Saham'.")
+
 else:
-    st.info("Silakan upload file CSV datamu untuk memulai analisis.")
+    st.info("Silakan upload satu atau lebih file Excel data harian untuk memulai analisis.")
